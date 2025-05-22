@@ -127,7 +127,9 @@ class music_cog(commands.Cog):
             'http://www.youtube.com/results?' + queryString)
         searchResults = re.findall(
             r'/watch\?v=(.{11})', htmContent.read().decode())  # fixed: use raw string
-        return searchResults[0:10]
+        # Only keep IDs that are exactly 11 characters (valid YouTube IDs)
+        filteredResults = [vid for vid in searchResults if len(vid) == 11]
+        return filteredResults[0:10]
 
     def extract_YT(self, url):
         with YoutubeDL(self.YTDL_OPTIONS) as ydl:
@@ -251,7 +253,8 @@ class music_cog(commands.Cog):
             else:
                 return
         else:
-            song = self.extract_YT(self.search_YT(search)[0])
+            yt_url = 'https://www.youtube.com/watch?v=' + self.search_YT(search)[0]
+            song = self.extract_YT(yt_url)
             if type(song) == type(True):
                 await interaction.response.send_message("Could not download the song. Incorrect format, try some different keywords.")
             else:
@@ -277,7 +280,8 @@ class music_cog(commands.Cog):
         id = int(interaction.guild.id)
         if id not in self.musicQueue:
             self.musicQueue[id] = []
-        song = self.extract_YT(self.search_YT(search)[0])
+        yt_url = 'https://www.youtube.com/watch?v=' + self.search_YT(search)[0]
+        song = self.extract_YT(yt_url)
         if type(song) == type(False):
             await interaction.response.send_message("Could not download the song. Incorrect format, try different keywords.")
             return
@@ -370,7 +374,11 @@ class music_cog(commands.Cog):
                 async def callback(self, interaction2: discord.Interaction):
                     # Remove any appended index to get the original token
                     token = self.values[0].split('_')[0]
-                    song = self.view.parent.extract_YT(token)
+                    yt_url = 'https://www.youtube.com/watch?v=' + token
+                    song = self.view.parent.extract_YT(yt_url)
+                    if type(song) == type(False):
+                        await interaction2.response.edit_message(content="Could not download the song. Incorrect format, try different keywords.", embed=None, view=None)
+                        return
                     id = int(interaction2.guild.id)
                     # Ensure the queue exists for this guild
                     if id not in self.view.parent.musicQueue:
