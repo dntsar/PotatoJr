@@ -14,6 +14,7 @@ class Client(commands.Bot):
         # Use setup_hook for loading cogs/extensions and syncing commands
         await self.load_extension("music_cog")
         await self.load_extension("reply_cog")  # <-- Add this line
+        await self.load_extension("dice_cog")   # <-- Add this line
         try:
             # Remove guild argument to sync globally
             synced = await self.tree.sync()

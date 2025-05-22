@@ -138,7 +138,41 @@ class music_cog(commands.Cog):
             except Exception as e:
                 print(f"yt-dlp extraction error: {e}")
                 return False
-        # Find a direct audio format (not m3u8, not dash)
+        # If it's a playlist, return a list of song dicts
+        if 'entries' in info:
+            songs = []
+            for entry in info['entries']:
+                if not entry:
+                    continue
+                # Find a direct audio format (not m3u8, not dash)
+                audio_url = None
+                for f in entry.get('formats', []):
+                    if (
+                        f.get('acodec') != 'none'
+                        and f.get('vcodec') == 'none'
+                        and f.get('protocol', '').startswith('http')
+                        and not f.get('url', '').endswith('.m3u8')
+                        and not f.get('url', '').endswith('.mpd')
+                    ):
+                        audio_url = f['url']
+                        break
+                if not audio_url:
+                    for f in entry.get('formats', []):
+                        if f.get('acodec') != 'none' and f.get('protocol', '').startswith('http'):
+                            audio_url = f['url']
+                            break
+                if not audio_url and 'url' in entry:
+                    audio_url = entry['url']
+                if not audio_url:
+                    continue
+                songs.append({
+                    'link': 'https://www.youtube.com/watch?v=' + entry['id'],
+                    'thumbnail': 'https://i.ytimg.com/vi/' + entry['id'] + '/hqdefault.jpg',
+                    'source': audio_url,
+                    'title': entry['title']
+                })
+            return songs
+        # fallback to single video extraction
         audio_url = None
         for f in info.get('formats', []):
             # Print format info for debugging
@@ -153,14 +187,12 @@ class music_cog(commands.Cog):
                 audio_url = f['url']
                 print(f"Selected audio url: {audio_url}")
                 break
-        # fallback to first http audio format if nothing found
         if not audio_url:
             for f in info.get('formats', []):
                 if f.get('acodec') != 'none' and f.get('protocol', '').startswith('http'):
                     audio_url = f['url']
                     print(f"Fallback audio url: {audio_url}")
                     break
-        # fallback to info['url'] if present
         if not audio_url and 'url' in info:
             audio_url = info['url']
         if not audio_url:
@@ -228,7 +260,7 @@ class music_cog(commands.Cog):
         try:
             userChannel = interaction.user.voice.channel
         except:
-            await interaction.response.send_message("You must be connected to a voice channel.", ephemeral=True)
+            await interaction.response.send_message("You must be connected to a voice channel.", ephemeral=False)
             return
 
         if id not in self.musicQueue:
@@ -238,7 +270,6 @@ class music_cog(commands.Cog):
             self.is_paused[id] = False
             self.is_playing[id] = False
 
-        # Remove defer, handle response immediately
         if not search:
             if len(self.musicQueue[id]) == 0:
                 await interaction.response.send_message("There are no songs to be played in the queue.")
@@ -253,19 +284,36 @@ class music_cog(commands.Cog):
             else:
                 return
         else:
-            yt_url = 'https://www.youtube.com/watch?v=' + self.search_YT(search)[0]
-            song = self.extract_YT(yt_url)
-            if type(song) == type(True):
-                await interaction.response.send_message("Could not download the song. Incorrect format, try some different keywords.")
+            # Improved: handle empty search results and allow direct playlist links
+            if "youtube.com/watch" not in search and "youtu.be/" not in search and "playlist" not in search:
+                search_results = self.search_YT(search)
+                if not search_results:
+                    await interaction.response.send_message("No results found for your search.")
+                    return
+                yt_url = 'https://www.youtube.com/watch?v=' + search_results[0]
             else:
-                self.musicQueue[id].append([song, userChannel])
+                yt_url = search
+            songs = self.extract_YT(yt_url)
+            if songs is False:
+                await interaction.response.send_message("Could not download the song. Incorrect format, try some different keywords.")
+            elif isinstance(songs, list):
+                for song in songs:
+                    self.musicQueue[id].append([song, userChannel])
+                await interaction.response.send_message(f"Added {len(songs)} songs from the playlist to the queue.")
                 if not self.is_playing[id]:
-                    message = self.now_playing_embed(interaction, song)
+                    await self.play_music(interaction)
+            else:
+                self.musicQueue[id].append([songs, userChannel])
+                if not self.is_playing[id]:
+                    message = self.now_playing_embed(interaction, songs)
                     await interaction.response.send_message(embed=message)
                     await self.play_music(interaction)
                 else:
-                    message = self.added_song_embed(interaction, song)
-                    await interaction.response.send_message(embed=message)
+                    message = self.added_song_embed(interaction, songs)
+                    if interaction.response.is_done():
+                        await interaction.followup.send(embed=message)
+                    else:
+                        await interaction.response.send_message(embed=message)
 
     @app_commands.command(
         name="add",
@@ -275,19 +323,31 @@ class music_cog(commands.Cog):
         try:
             userChannel = interaction.user.voice.channel
         except:
-            await interaction.response.send_message("You must be in a voice channel.", ephemeral=True)
+            await interaction.response.send_message("You must be in a voice channel.", ephemeral=False)
             return
         id = int(interaction.guild.id)
         if id not in self.musicQueue:
             self.musicQueue[id] = []
-        yt_url = 'https://www.youtube.com/watch?v=' + self.search_YT(search)[0]
-        song = self.extract_YT(yt_url)
-        if type(song) == type(False):
+        # Improved: handle empty search results and allow direct playlist links
+        if "youtube.com/watch" not in search and "youtu.be/" not in search and "playlist" not in search:
+            search_results = self.search_YT(search)
+            if not search_results:
+                await interaction.response.send_message("No results found for your search.")
+                return
+            yt_url = 'https://www.youtube.com/watch?v=' + search_results[0]
+        else:
+            yt_url = search
+        songs = self.extract_YT(yt_url)
+        if songs is False:
             await interaction.response.send_message("Could not download the song. Incorrect format, try different keywords.")
             return
+        elif isinstance(songs, list):
+            for song in songs:
+                self.musicQueue[id].append([song, userChannel])
+            await interaction.response.send_message(f"Added {len(songs)} songs from the playlist to the queue.")
         else:
-            self.musicQueue[id].append([song, userChannel])
-            message = self.added_song_embed(interaction, song)
+            self.musicQueue[id].append([songs, userChannel])
+            message = self.added_song_embed(interaction, songs)
             await interaction.response.send_message(embed=message)
 
     @app_commands.command(
@@ -322,7 +382,7 @@ class music_cog(commands.Cog):
         try:
             userChannel = interaction.user.voice.channel
         except:
-            await interaction.response.send_message("You must be connected to a voice channel.", ephemeral=True)
+            await interaction.response.send_message("You must be connected to a voice channel.", ephemeral=False)
             return
 
         await interaction.response.send_message("Fetching search results . . .")
@@ -473,6 +533,7 @@ class music_cog(commands.Cog):
             self.vc[id].pause()
             self.queueIndex[id] += 1
             await self.play_music(interaction)
+            await interaction.response.send_message("Skipped to the next song in the queue.")
 
     @app_commands.command(
         name="previous",
@@ -564,12 +625,17 @@ class music_cog(commands.Cog):
     )
     async def clear(self, interaction: discord.Interaction):
         id = int(interaction.guild.id)
-        if id in self.vc and self.vc[id] is not None and self.is_playing.get(id, False):
-            self.is_playing[id] = self.is_paused[id] = False
-            self.vc[id].stop()
+        # Only clear songs that are not currently playing
         if id in self.musicQueue and self.musicQueue[id]:
-            self.musicQueue[id] = []
-            await interaction.response.send_message("The music queue has been cleared.")
+            # Keep the currently playing song (at queueIndex[id]), remove the rest
+            if self.is_playing.get(id, False) and self.queueIndex[id] < len(self.musicQueue[id]):
+                self.musicQueue[id] = [self.musicQueue[id][self.queueIndex[id]]]
+                self.queueIndex[id] = 0
+                await interaction.response.send_message("The queue has been cleared, but the current song will keep playing.")
+            else:
+                self.musicQueue[id] = []
+                self.queueIndex[id] = 0
+                await interaction.response.send_message("The music queue has been cleared.")
         else:
             await interaction.response.send_message("The queue is already empty.")
         self.queueIndex[id] = 0
@@ -601,7 +667,7 @@ class music_cog(commands.Cog):
             self.vc[id] = None
         else:
            
-            await interaction.response.send_message("I'm not connected to a voice channel.", ephemeral=True)
+            await interaction.response.send_message("I'm not connected to a voice channel.", ephemeral=False)
 
     @ commands.command(
         name="joinvc",
@@ -640,9 +706,9 @@ class music_cog(commands.Cog):
     async def pause_slash(self, interaction: discord.Interaction):
         id = int(interaction.guild.id)
         if not self.vc.get(id):
-            await interaction.response.send_message("There is no audio to be paused at the moment.", ephemeral=True)
+            await interaction.response.send_message("There is no audio to be paused at the moment.", ephemeral=False)
         elif self.is_playing.get(id, False):
-            await interaction.response.send_message("Audio paused!", ephemeral=True)
+            await interaction.response.send_message("Audio paused!", ephemeral=False)
             self.is_playing[id] = False
             self.is_paused[id] = True
             self.vc[id].pause()
@@ -654,9 +720,9 @@ class music_cog(commands.Cog):
     async def resume_slash(self, interaction: discord.Interaction):
         id = int(interaction.guild.id)
         if not self.vc.get(id):
-            await interaction.response.send_message("There is no audio to be played at the moment.", ephemeral=True)
+            await interaction.response.send_message("There is no audio to be played at the moment.", ephemeral=False)
         elif self.is_paused.get(id, False):
-            await interaction.response.send_message("The audio is now playing!", ephemeral=True)
+            await interaction.response.send_message("The audio is now playing!", ephemeral=False)
             self.is_playing[id] = True
             self.is_paused[id] = False
             self.vc[id].resume()
