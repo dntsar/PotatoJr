@@ -13,6 +13,7 @@ class Client(commands.Bot):
     async def setup_hook(self):
         # Use setup_hook for loading cogs/extensions and syncing commands
         await self.load_extension("music_cog")
+        await self.load_extension("reply_cog")  # <-- Add this line
         try:
             # Remove guild argument to sync globally
             synced = await self.tree.sync()
@@ -29,12 +30,6 @@ class Client(commands.Bot):
 intents = discord.Intents.default()
 intents.message_content = True
 bot = Client(command_prefix='!', intents=intents)
-
-
-# Remove guild=GUILD_ID from the decorator to make the command global
-@bot.tree.command(name="hello", description="Say hello!")
-async def sayHello(interaction: discord.Interaction):
-    await interaction.response.send_message("Hi there!")
 
 with open('token.txt', 'r') as file:
     token = file.readlines()[0]
