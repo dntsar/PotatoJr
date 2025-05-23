@@ -271,10 +271,12 @@ class music_cog(commands.Cog):
             self.is_playing[id] = False
 
         if not search:
+            # Always respond immediately to avoid Discord timeout
             if len(self.musicQueue[id]) == 0:
                 await interaction.response.send_message("There are no songs to be played in the queue.")
                 return
             elif not self.is_playing[id]:
+                await interaction.response.send_message("Resuming playback or starting the queue...")
                 if self.musicQueue[id] == None or self.vc[id] == None:
                     await self.play_music(interaction)
                 else:
@@ -282,38 +284,42 @@ class music_cog(commands.Cog):
                     self.is_playing[id] = True
                     self.vc[id].resume()
             else:
-                return
+                await interaction.response.send_message("Music is already playing.")
+            return
         else:
+            # Respond immediately to avoid Discord timeout
+            await interaction.response.send_message("Processing your request, please wait...")
+
             # Improved: handle empty search results and allow direct playlist links
             if "youtube.com/watch" not in search and "youtu.be/" not in search and "playlist" not in search:
                 search_results = self.search_YT(search)
                 if not search_results:
-                    await interaction.response.send_message("No results found for your search.")
+                    await interaction.followup.send("No results found for your search.")
                     return
                 yt_url = 'https://www.youtube.com/watch?v=' + search_results[0]
             else:
                 yt_url = search
+            # Download/extract after initial response
             songs = self.extract_YT(yt_url)
             if songs is False:
-                await interaction.response.send_message("Could not download the song. Incorrect format, try some different keywords.")
+                await interaction.followup.send("Could not download the song. Incorrect format, try some different keywords.")
             elif isinstance(songs, list):
                 for song in songs:
                     self.musicQueue[id].append([song, userChannel])
-                await interaction.response.send_message(f"Added {len(songs)} songs from the playlist to the queue.")
-                if not self.is_playing[id]:
+                await interaction.followup.send(f"Added {len(songs)} songs from the playlist to the queue.")
+                # Always start playing after adding playlist if not already playing
+                if not self.is_playing.get(id, False) or self.vc[id] is None or not self.vc[id].is_connected():
+                    self.queueIndex[id] = 0
                     await self.play_music(interaction)
             else:
                 self.musicQueue[id].append([songs, userChannel])
                 if not self.is_playing[id]:
                     message = self.now_playing_embed(interaction, songs)
-                    await interaction.response.send_message(embed=message)
+                    await interaction.followup.send(embed=message)
                     await self.play_music(interaction)
                 else:
                     message = self.added_song_embed(interaction, songs)
-                    if interaction.response.is_done():
-                        await interaction.followup.send(embed=message)
-                    else:
-                        await interaction.response.send_message(embed=message)
+                    await interaction.followup.send(embed=message)
 
     @app_commands.command(
         name="add",
@@ -328,27 +334,29 @@ class music_cog(commands.Cog):
         id = int(interaction.guild.id)
         if id not in self.musicQueue:
             self.musicQueue[id] = []
+        # Respond immediately to avoid Discord timeout
+        await interaction.response.send_message("Processing your request, please wait...")
         # Improved: handle empty search results and allow direct playlist links
         if "youtube.com/watch" not in search and "youtu.be/" not in search and "playlist" not in search:
             search_results = self.search_YT(search)
             if not search_results:
-                await interaction.response.send_message("No results found for your search.")
+                await interaction.followup.send("No results found for your search.")
                 return
             yt_url = 'https://www.youtube.com/watch?v=' + search_results[0]
         else:
             yt_url = search
         songs = self.extract_YT(yt_url)
         if songs is False:
-            await interaction.response.send_message("Could not download the song. Incorrect format, try different keywords.")
+            await interaction.followup.send("Could not download the song. Incorrect format, try different keywords.")
             return
         elif isinstance(songs, list):
             for song in songs:
                 self.musicQueue[id].append([song, userChannel])
-            await interaction.response.send_message(f"Added {len(songs)} songs from the playlist to the queue.")
+            await interaction.followup.send(f"Added {len(songs)} songs from the playlist to the queue.")
         else:
             self.musicQueue[id].append([songs, userChannel])
             message = self.added_song_embed(interaction, songs)
-            await interaction.response.send_message(embed=message)
+            await interaction.followup.send(embed=message)
 
     @app_commands.command(
         name="remove",
@@ -726,6 +734,25 @@ class music_cog(commands.Cog):
             self.is_playing[id] = True
             self.is_paused[id] = False
             self.vc[id].resume()
+
+    @app_commands.command(
+        name="stop",
+        aliases=["end"],
+        description="Stops the current song, clears the queue, and leaves the voice channel."
+    )
+    async def stop(self, interaction: discord.Interaction):
+        id = int(interaction.guild.id)
+        # Stop playback
+        if self.vc.get(id) and self.vc[id].is_connected():
+            self.vc[id].stop()
+            await self.vc[id].disconnect()
+            self.vc[id] = None
+        # Clear queue and reset state
+        self.musicQueue[id] = []
+        self.queueIndex[id] = 0
+        self.is_playing[id] = False
+        self.is_paused[id] = False
+        await interaction.response.send_message("Stopped playback, cleared the queue, and left the voice channel.")
 
 async def setup(bot):
     await bot.add_cog(music_cog(bot))
