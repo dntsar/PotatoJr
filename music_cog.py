@@ -6,6 +6,7 @@ import re
 from yt_dlp import YoutubeDL  # use yt-dlp instead of youtube_dl
 import json  # <-- Add this import
 from discord import ui
+from asyncio import run_coroutine_threadsafe  # <-- Add this import
 
 class music_cog(commands.Cog):
     def __init__(self, bot):
@@ -49,12 +50,14 @@ class music_cog(commands.Cog):
     def now_playing_embed(self, ctx_or_interaction, song):
         # Accepts both ctx (prefix) and interaction (slash)
         author = getattr(ctx_or_interaction, "user", None) or getattr(ctx_or_interaction, "author", None)
-        avatar = getattr(author, "avatar_url", None)
-        if hasattr(author, "display_avatar"):
-            avatar = author.display_avatar.url
-        elif hasattr(author, "avatar"):
-            avatar = author.avatar.url
-
+        avatar = None
+        if author is not None:
+            if hasattr(author, "display_avatar"):
+                avatar = author.display_avatar.url
+            elif hasattr(author, "avatar") and author.avatar:
+                avatar = author.avatar.url
+            elif hasattr(author, "avatar_url"):
+                avatar = author.avatar_url
         embed = discord.Embed(
             title="Now Playing",
             description=f'[{song["title"]}]({song["link"]})',
@@ -66,12 +69,14 @@ class music_cog(commands.Cog):
 
     def added_song_embed(self, ctx_or_interaction, song):
         author = getattr(ctx_or_interaction, "user", None) or getattr(ctx_or_interaction, "author", None)
-        avatar = getattr(author, "avatar_url", None)
-        if hasattr(author, "display_avatar"):
-            avatar = author.display_avatar.url
-        elif hasattr(author, "avatar"):
-            avatar = author.avatar.url
-
+        avatar = None
+        if author is not None:
+            if hasattr(author, "display_avatar"):
+                avatar = author.display_avatar.url
+            elif hasattr(author, "avatar") and author.avatar:
+                avatar = author.avatar.url
+            elif hasattr(author, "avatar_url"):
+                avatar = author.avatar_url
         embed = discord.Embed(
             title="Song Added To Queue!",
             description=f'[{song["title"]}]({song["link"]})',
@@ -83,12 +88,14 @@ class music_cog(commands.Cog):
 
     def removed_song_embed(self, ctx_or_interaction, song):
         author = getattr(ctx_or_interaction, "user", None) or getattr(ctx_or_interaction, "author", None)
-        avatar = getattr(author, "avatar_url", None)
-        if hasattr(author, "display_avatar"):
-            avatar = author.display_avatar.url
-        elif hasattr(author, "avatar"):
-            avatar = author.avatar.url
-
+        avatar = None
+        if author is not None:
+            if hasattr(author, "display_avatar"):
+                avatar = author.display_avatar.url
+            elif hasattr(author, "avatar") and author.avatar:
+                avatar = author.avatar.url
+            elif hasattr(author, "avatar_url"):
+                avatar = author.avatar_url
         embed = discord.Embed(
             title="Song Removed From Queue!",
             description=f'[{song["title"]}]({song["link"]})',
@@ -138,15 +145,17 @@ class music_cog(commands.Cog):
             except Exception as e:
                 print(f"yt-dlp extraction error: {e}")
                 return False
+        if not info:
+            return False
         # If it's a playlist, return a list of song dicts
-        if 'entries' in info:
+        if isinstance(info, dict) and 'entries' in info and info['entries']:
             songs = []
             for entry in info['entries']:
                 if not entry:
                     continue
                 # Find a direct audio format (not m3u8, not dash)
                 audio_url = None
-                for f in entry.get('formats', []):
+                for f in entry.get('formats', []) if entry else []:
                     if (
                         f.get('acodec') != 'none'
                         and f.get('vcodec') == 'none'
@@ -157,11 +166,11 @@ class music_cog(commands.Cog):
                         audio_url = f['url']
                         break
                 if not audio_url:
-                    for f in entry.get('formats', []):
+                    for f in entry.get('formats', []) if entry else []:
                         if f.get('acodec') != 'none' and f.get('protocol', '').startswith('http'):
                             audio_url = f['url']
                             break
-                if not audio_url and 'url' in entry:
+                if not audio_url and isinstance(entry, dict) and 'url' in entry:
                     audio_url = entry['url']
                 if not audio_url:
                     continue
@@ -174,7 +183,7 @@ class music_cog(commands.Cog):
             return songs
         # fallback to single video extraction
         audio_url = None
-        for f in info.get('formats', []):
+        for f in info.get('formats', []) if info else []:
             # Print format info for debugging
             print(f"Format: {f.get('format_id')} | acodec: {f.get('acodec')} | vcodec: {f.get('vcodec')} | ext: {f.get('ext')} | url: {f.get('url')}")
             if (
@@ -188,12 +197,12 @@ class music_cog(commands.Cog):
                 print(f"Selected audio url: {audio_url}")
                 break
         if not audio_url:
-            for f in info.get('formats', []):
+            for f in info.get('formats', []) if info else []:
                 if f.get('acodec') != 'none' and f.get('protocol', '').startswith('http'):
                     audio_url = f['url']
                     print(f"Fallback audio url: {audio_url}")
                     break
-        if not audio_url and 'url' in info:
+        if not audio_url and isinstance(info, dict) and 'url' in info:
             audio_url = info['url']
         if not audio_url:
             return False
@@ -206,9 +215,9 @@ class music_cog(commands.Cog):
 
     def play_next(self, ctx):
         id = int(ctx.guild.id)
-        if not self.is_playing[id]:
+        if not self.is_playing.get(id, False):
             return
-        if self.queueIndex[id] + 1 < len(self.musicQueue[id]):
+        if self.queueIndex.get(id, 0) + 1 < len(self.musicQueue.get(id, [])):
             self.is_playing[id] = True
             self.queueIndex[id] += 1
 
@@ -223,15 +232,22 @@ class music_cog(commands.Cog):
                 except:
                     pass
 
-            self.vc[id].play(discord.FFmpegPCMAudio(
-                song['source'], **self.FFMPEG_OPTIONS), after=lambda e: self.play_next(ctx))
+            vc = self.vc.get(id)
+            if vc:
+                # Only pass valid keyword arguments to FFmpegPCMAudio
+                thumbnail = song.get("thumbnail") or ""
+                vc.play(discord.FFmpegPCMAudio(
+                    song['source'],
+                    before_options=self.FFMPEG_OPTIONS['before_options'],
+                    options=self.FFMPEG_OPTIONS['options']
+                ), after=lambda e: self.play_next(ctx))
         else:
             self.queueIndex[id] += 1
             self.is_playing[id] = False
 
     async def play_music(self, ctx):
         id = int(ctx.guild.id)
-        if self.queueIndex[id] < len(self.musicQueue[id]):
+        if self.queueIndex.get(id, 0) < len(self.musicQueue.get(id, [])):
             self.is_playing[id] = True
             self.is_paused[id] = False
 
@@ -243,8 +259,13 @@ class music_cog(commands.Cog):
             if not isinstance(ctx, discord.Interaction):
                 await ctx.send(embed=message)
 
-            self.vc[id].play(discord.FFmpegPCMAudio(
-                song['source'], **self.FFMPEG_OPTIONS), after=lambda e: self.play_next(ctx))
+            vc = self.vc.get(id)
+            if vc:
+                vc.play(discord.FFmpegPCMAudio(
+                    song['source'],
+                    before_options=self.FFMPEG_OPTIONS['before_options'],
+                    options=self.FFMPEG_OPTIONS['options']
+                ), after=lambda e: self.play_next(ctx))
         else:
             if not isinstance(ctx, discord.Interaction):
                 await ctx.send("There are no songs in the queue to be played.")
@@ -256,9 +277,12 @@ class music_cog(commands.Cog):
         description="Plays (or resumes) the audio of a specified YouTube video"
     )
     async def play(self, interaction: discord.Interaction, search: str = None):
-        id = int(interaction.guild.id)
+        id = int(getattr(interaction.guild, "id", 0) or 0)
         try:
-            userChannel = interaction.user.voice.channel
+            user_voice = getattr(interaction.user, "voice", None)
+            userChannel = user_voice.channel if user_voice and user_voice.channel else None
+            if userChannel is None:
+                raise Exception()
         except:
             await interaction.response.send_message("You must be connected to a voice channel.", ephemeral=False)
             return
@@ -275,7 +299,7 @@ class music_cog(commands.Cog):
             if len(self.musicQueue[id]) == 0:
                 await interaction.response.send_message("There are no songs to be played in the queue.")
                 return
-            elif not self.is_playing[id]:
+            elif not self.is_playing.get(id, False):
                 await interaction.response.send_message("Resuming playback or starting the queue...")
                 if self.musicQueue[id] == None or self.vc[id] == None:
                     await self.play_music(interaction)
@@ -326,12 +350,15 @@ class music_cog(commands.Cog):
         description="Adds the first search result to the queue"
     )
     async def add(self, interaction: discord.Interaction, search: str):
+        id = int(getattr(interaction.guild, "id", 0) or 0)
         try:
-            userChannel = interaction.user.voice.channel
+            user_voice = getattr(interaction.user, "voice", None)
+            userChannel = user_voice.channel if user_voice and user_voice.channel else None
+            if userChannel is None:
+                raise Exception()
         except:
             await interaction.response.send_message("You must be in a voice channel.", ephemeral=False)
             return
-        id = int(interaction.guild.id)
         if id not in self.musicQueue:
             self.musicQueue[id] = []
         # Respond immediately to avoid Discord timeout
@@ -363,7 +390,7 @@ class music_cog(commands.Cog):
         description="Removes the last song in the queue"
     )
     async def remove(self, interaction: discord.Interaction):
-        id = int(interaction.guild.id)
+        id = int(getattr(interaction.guild, "id", 0) or 0)
         if self.musicQueue.get(id, []) != []:
             song = self.musicQueue[id][-1][0]
             removeSongEmbed = self.removed_song_embed(interaction, song)
@@ -387,8 +414,12 @@ class music_cog(commands.Cog):
         description="Provides a list of YouTube search results"
     )
     async def search(self, interaction: discord.Interaction, search: str):
+        id = int(getattr(interaction.guild, "id", 0) or 0)
         try:
-            userChannel = interaction.user.voice.channel
+            userChannel = getattr(interaction.user, "voice", None)
+            if userChannel is None or userChannel.channel is None:
+                raise Exception()
+            userChannel = userChannel.channel
         except:
             await interaction.response.send_message("You must be connected to a voice channel.", ephemeral=False)
             return
@@ -418,10 +449,10 @@ class music_cog(commands.Cog):
                 self.user_channel = user_channel
                 self.parent = parent
 
-                self.add_item(self.SongDropdown(tokens, names))
+                self.add_item(self.SongDropdown(tokens, names, parent, user_channel))
 
             class SongDropdown(ui.Select):
-                def __init__(self, tokens, names):
+                def __init__(self, tokens, names, parent, user_channel):
                     # Ensure unique values for each option
                     used = set()
                     options = []
@@ -438,32 +469,43 @@ class music_cog(commands.Cog):
                             )
                         )
                     super().__init__(placeholder="Select a song to add to the queue", min_values=1, max_values=1, options=options)
+                    self.parent = parent
+                    self.user_channel = user_channel
 
-                async def callback(self, interaction2: discord.Interaction):
+                async def callback(self, interaction):
                     # Remove any appended index to get the original token
                     token = self.values[0].split('_')[0]
                     yt_url = 'https://www.youtube.com/watch?v=' + token
-                    song = self.view.parent.extract_YT(yt_url)
+                    song = self.parent.extract_YT(yt_url)
                     if type(song) == type(False):
-                        await interaction2.response.edit_message(content="Could not download the song. Incorrect format, try different keywords.", embed=None, view=None)
+                        await interaction.response.edit_message(content="Could not download the song. Incorrect format, try different keywords.", embed=None, view=None)
                         return
-                    id = int(interaction2.guild.id)
+                    id = int(interaction.guild.id)
                     # Ensure the queue exists for this guild
-                    if id not in self.view.parent.musicQueue:
-                        self.view.parent.musicQueue[id] = []
-                        self.view.parent.queueIndex[id] = 0
-                        self.view.parent.vc[id] = None
-                        self.view.parent.is_paused[id] = False
-                        self.view.parent.is_playing[id] = False
-                    self.view.parent.musicQueue[id].append([song, self.view.user_channel])
+                    if id not in self.parent.musicQueue:
+                        self.parent.musicQueue[id] = []
+                        self.parent.queueIndex[id] = 0
+                        self.parent.vc[id] = None
+                        self.parent.is_paused[id] = False
+                        self.parent.is_playing[id] = False
+                    self.parent.musicQueue[id].append([song, self.user_channel])
                     embed = discord.Embed(
                         title="Song Added To Queue!",
                         description=f'[{song["title"]}]({song["link"]})',
-                        colour=self.view.parent.embedRed,
+                        colour=self.parent.embedRed,
                     )
-                    embed.set_thumbnail(url=song["thumbnail"])
-                    embed.set_footer(text=f'Song added by: {interaction2.user}', icon_url=interaction2.user.display_avatar.url)
-                    await interaction2.response.edit_message(content="Song added to queue!", embed=embed, view=None)
+                    user = getattr(interaction, "user", None)
+                    avatar = None
+                    if user is not None:
+                        if hasattr(user, "display_avatar"):
+                            avatar = user.display_avatar.url
+                        elif hasattr(user, "avatar") and user.avatar:
+                            avatar = user.avatar.url
+                        elif hasattr(user, "avatar_url"):
+                            avatar = user.avatar_url
+                    embed.set_thumbnail(url=song.get("thumbnail") or "")
+                    embed.set_footer(text=f'Song added by: {user}', icon_url=avatar)
+                    await interaction.response.edit_message(content="Song added to queue!", embed=embed, view=None)
 
         embedText = ""
         for i, name in enumerate(songNames):
@@ -477,63 +519,15 @@ class music_cog(commands.Cog):
         )
         await interaction.followup.send(embed=searchResults, view=SongSelect(self, songTokens, songNames, userChannel))
 
-    @ commands.command(
-        name="pause",
-        aliases=["stop", "pa"],
-        help="Pauses the current song being played"
-    )
-    async def pause(self, ctx):
-        id = int(ctx.guild.id)
-        if not self.vc[id]:
-            await ctx.send("There is no audio to be paused at the moment.")
-        elif self.is_playing[id]:
-            await ctx.send("Audio paused!")
-            self.is_playing[id] = False
-            self.is_paused[id] = True
-            self.vc[id].pause()
-
-    @ commands.command(
-        name="resume",
-        aliases=["re"],
-        help="Resumes a paused song"
-    )
-    async def resume(self, ctx):
-        id = int(ctx.guild.id)
-        if not self.vc[id]:
-            await ctx.send("There is no audio to be played at the moment.")
-        elif self.is_paused[id]:
-            await ctx.send("The audio is now playing!")
-            self.is_playing[id] = True
-            self.is_paused[id] = False
-            self.vc[id].resume()
-
-    @ commands.command(
-        name="previous",
-        aliases=["pre", "pr"],
-        help="Plays the previous song in the queue"
-    )
-    async def previous(self, ctx):
-        id = int(ctx.guild.id)
-        if self.vc[id] == None:
-            await ctx.send("You need to be in a VC to use this command.")
-        elif self.queueIndex[id] <= 0:
-            await ctx.send("There is no previous song in the queue. Replaying current song.")
-            self.vc[id].pause()
-            await self.play_music(ctx)
-        elif self.vc[id] != None and self.vc[id]:
-            self.vc[id].pause()
-            self.queueIndex[id] -= 1
-            await self.play_music(ctx)
-
     @app_commands.command(
         name="skip",
         description="Skips to the next song in the queue."
     )
     async def skip(self, interaction: discord.Interaction):
-        id = int(interaction.guild.id)
-        if self.vc[id] is None:
+        id = int(getattr(interaction.guild, "id", 0) or 0)
+        if self.vc.get(id) is None:
             await interaction.response.send_message("You need to be in a VC to use this command.")
-        elif self.queueIndex[id] >= len(self.musicQueue[id]) - 1:
+        elif self.queueIndex.get(id, 0) >= len(self.musicQueue.get(id, [])) - 1:
             await interaction.response.send_message("There is no next song in the queue. Replaying current song.")
             self.vc[id].pause()
             await self.play_music(interaction)
@@ -547,11 +541,11 @@ class music_cog(commands.Cog):
         name="previous",
         description="Plays the previous song in the queue."
     )
-    async def previous(self, interaction: discord.Interaction):
-        id = int(interaction.guild.id)
-        if self.vc[id] is None:
+    async def previous_slash(self, interaction: discord.Interaction):
+        id = int(getattr(interaction.guild, "id", 0) or 0)
+        if self.vc.get(id) is None:
             await interaction.response.send_message("You need to be in a VC to use this command.")
-        elif self.queueIndex[id] <= 0:
+        elif self.queueIndex.get(id, 0) <= 0:
             await interaction.response.send_message("There is no previous song in the queue. Replaying current song.")
             self.vc[id].pause()
             await self.play_music(interaction)
@@ -560,7 +554,7 @@ class music_cog(commands.Cog):
             self.queueIndex[id] -= 1
             await self.play_music(interaction)
 
-    @ commands.command(
+    @commands.command(
         name="queue",
         aliases=["list", "q"],
         help="Lists the next few songs in the queue."
@@ -568,11 +562,11 @@ class music_cog(commands.Cog):
     async def queue(self, ctx):
         id = int(ctx.guild.id)
         returnValue = ""
-        if self.musicQueue[id] == []:
+        if self.musicQueue.get(id, []) == []:
             await ctx.send("There are no songs in the queue.")
             return
 
-        for i in range(self.queueIndex[id], len(self.musicQueue[id])):
+        for i in range(self.queueIndex.get(id, 0), len(self.musicQueue.get(id, []))):
             upNextSongs = len(self.musicQueue[id]) - self.queueIndex[id]
             if i > 5 + upNextSongs:
                 break
@@ -598,14 +592,14 @@ class music_cog(commands.Cog):
         name="queue",
         description="Lists the next few songs in the queue."
     )
-    async def queue(self, interaction: discord.Interaction):
-        id = int(interaction.guild.id)
+    async def queue_slash(self, interaction: discord.Interaction):
+        id = int(getattr(interaction.guild, "id", 0) or 0)
         if id not in self.musicQueue or not self.musicQueue[id]:
             await interaction.response.send_message("There are no songs in the queue.")
             return
 
         returnValue = ""
-        for i in range(self.queueIndex[id], len(self.musicQueue[id])):
+        for i in range(self.queueIndex.get(id, 0), len(self.musicQueue.get(id, []))):
             upNextSongs = len(self.musicQueue[id]) - self.queueIndex[id]
             if i > 5 + upNextSongs:
                 break
@@ -632,11 +626,11 @@ class music_cog(commands.Cog):
         description="Clears all of the songs from the queue."
     )
     async def clear(self, interaction: discord.Interaction):
-        id = int(interaction.guild.id)
+        id = int(getattr(interaction.guild, "id", 0) or 0)
         # Only clear songs that are not currently playing
         if id in self.musicQueue and self.musicQueue[id]:
             # Keep the currently playing song (at queueIndex[id]), remove the rest
-            if self.is_playing.get(id, False) and self.queueIndex[id] < len(self.musicQueue[id]):
+            if self.is_playing.get(id, False) and self.queueIndex.get(id, 0) < len(self.musicQueue[id]):
                 self.musicQueue[id] = [self.musicQueue[id][self.queueIndex[id]]]
                 self.queueIndex[id] = 0
                 await interaction.response.send_message("The queue has been cleared, but the current song will keep playing.")
@@ -653,8 +647,9 @@ class music_cog(commands.Cog):
         description="Connects PotatoJr. to the voice channel."
     )
     async def join(self, interaction: discord.Interaction):
-        if interaction.user.voice:
-            userChannel = interaction.user.voice.channel
+        user_voice = getattr(interaction.user, "voice", None)
+        userChannel = user_voice.channel if user_voice and user_voice.channel else None
+        if userChannel:
             await self.join_VC(interaction, userChannel)
             await interaction.response.send_message(f'PotatoJr. has joined {userChannel}')
         else:
@@ -665,7 +660,7 @@ class music_cog(commands.Cog):
         description="Removes PotatoJr. from the voice channel and clears the queue."
     )
     async def leave(self, interaction: discord.Interaction):
-        id = int(interaction.guild.id)
+        id = int(getattr(interaction.guild, "id", 0) or 0)
         self.is_playing[id] = self.is_paused[id] = False
         self.musicQueue[id] = []
         self.queueIndex[id] = 0
@@ -674,33 +669,33 @@ class music_cog(commands.Cog):
             await self.vc[id].disconnect()
             self.vc[id] = None
         else:
-           
             await interaction.response.send_message("I'm not connected to a voice channel.", ephemeral=False)
 
-    @ commands.command(
+    @commands.command(
         name="joinvc",
         aliases=["j"],
         help="Connects PotatoJr. to the voice channel"
     )
     async def joinvc(self, ctx):
-        if ctx.author.voice:
-            userChannel = ctx.author.voice.channel
+        user_voice = getattr(ctx.author, "voice", None)
+        userChannel = user_voice.channel if user_voice and user_voice.channel else None
+        if userChannel:
             await self.join_VC(ctx, userChannel)
             await ctx.send(f'PotatoJr. has joined {userChannel}')
         else:
             await ctx.send("You need to be connected to a voice channel.")
 
-    @ commands.command(
+    @commands.command(
         name="leavevc",
         aliases=["l"],
         help="Removes PotatoJr. from the voice channel and clears the queue"
     )
     async def leavevc(self, ctx):
-        id = int(ctx.guild.id)
+        id = int(getattr(ctx.guild, "id", 0) or 0)
         self.is_playing[id] = self.is_paused[id] = False
         self.musicQueue[id] = []
         self.queueIndex[id] = 0
-        if self.vc[id] != None:
+        if self.vc.get(id) is not None:
             await ctx.send("PotatoJr. has left the chat")
             await self.vc[id].disconnect()
             self.vc[id] = None
@@ -712,7 +707,7 @@ class music_cog(commands.Cog):
         description="Pauses the current song being played"
     )
     async def pause_slash(self, interaction: discord.Interaction):
-        id = int(interaction.guild.id)
+        id = int(getattr(interaction.guild, "id", 0) or 0)
         if not self.vc.get(id):
             await interaction.response.send_message("There is no audio to be paused at the moment.", ephemeral=False)
         elif self.is_playing.get(id, False):
@@ -726,7 +721,7 @@ class music_cog(commands.Cog):
         description="Resumes a paused song"
     )
     async def resume_slash(self, interaction: discord.Interaction):
-        id = int(interaction.guild.id)
+        id = int(getattr(interaction.guild, "id", 0) or 0)
         if not self.vc.get(id):
             await interaction.response.send_message("There is no audio to be played at the moment.", ephemeral=False)
         elif self.is_paused.get(id, False):
@@ -737,11 +732,10 @@ class music_cog(commands.Cog):
 
     @app_commands.command(
         name="stop",
-        aliases=["end"],
         description="Stops the current song, clears the queue, and leaves the voice channel."
     )
     async def stop(self, interaction: discord.Interaction):
-        id = int(interaction.guild.id)
+        id = int(getattr(interaction.guild, "id", 0) or 0)
         # Stop playback
         if self.vc.get(id) and self.vc[id].is_connected():
             self.vc[id].stop()
